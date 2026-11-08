@@ -4,6 +4,7 @@ import com.trafficflow.model.Direction;
 import com.trafficflow.model.SignalColor;
 import com.trafficflow.model.SimulationSnapshot;
 import com.trafficflow.model.TrafficPhase;
+import com.trafficflow.model.VehicleSnapshot;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.effect.DropShadow;
@@ -33,6 +34,7 @@ public class IntersectionView extends Pane {
     private final Canvas canvas;
     private final Map<Direction, SignalColor> currentSignals = new EnumMap<>(Direction.class);
     private TrafficPhase currentPhase = TrafficPhase.ALL_RED;
+    private Map<Direction, java.util.List<VehicleSnapshot>> currentVehicles = new EnumMap<>(Direction.class);
 
     // Palette
     private static final Color BG_TERRAIN = Color.web("#14161a");
@@ -72,6 +74,7 @@ public class IntersectionView extends Pane {
         }
         this.currentPhase = snapshot.currentPhase();
         this.currentSignals.putAll(snapshot.signals());
+        this.currentVehicles = snapshot.activeVehicles();
         draw();
     }
 
@@ -135,11 +138,126 @@ public class IntersectionView extends Pane {
         // 3. Draw Lane Markings, Medians, and Crosswalks
         drawMarkings(gc, w, h, cx, cy, halfRoad, scale);
 
-        // 4. Draw Direction Labels
+        // 4. Draw live vehicles above the road markings
+        drawVehicles(gc, w, h, cx, cy, halfRoad, scale);
+
+        // 5. Draw Direction Labels
         drawDirectionLabels(gc, w, h, cx, cy, halfRoad, scale);
 
-        // 5. Draw Traffic Signal Heads
+        // 6. Draw Traffic Signal Heads
         drawSignalHeads(gc, cx, cy, halfRoad, scale);
+    }
+
+
+    /**
+     * Draws vehicles using only immutable snapshots supplied by the simulation engine.
+     * Model positions represent the vehicle front measured from the approach entrance.
+     */
+    private void drawVehicles(GraphicsContext gc, double w, double h,
+                              double cx, double cy, double halfRoad, double scale) {
+        if (currentVehicles == null || currentVehicles.isEmpty()) {
+            return;
+        }
+
+        double crosswalkWidth = 24.0 * scale;
+        double stopLineGap = 4.0 * scale;
+        double northStopY = cy - halfRoad - crosswalkWidth - stopLineGap;
+        double southStopY = cy + halfRoad + crosswalkWidth + stopLineGap;
+        double westStopX = cx - halfRoad - crosswalkWidth - stopLineGap;
+        double eastStopX = cx + halfRoad + crosswalkWidth + stopLineGap;
+
+        // The model's standard stop line is at 150 m. Scale the approach distance
+        // to the available canvas space while keeping vehicle dimensions readable.
+        double northPpm = Math.max(0.35, northStopY / 150.0);
+        double southPpm = Math.max(0.35, (h - southStopY) / 150.0);
+        double westPpm = Math.max(0.35, westStopX / 150.0);
+        double eastPpm = Math.max(0.35, (w - eastStopX) / 150.0);
+
+        Color[] vehicleColors = {
+                Color.web("#61afef"), Color.web("#e5c07b"), Color.web("#98c379"),
+                Color.web("#c678dd"), Color.web("#e06c75"), Color.web("#56b6c2")
+        };
+
+        for (Direction direction : Direction.values()) {
+            java.util.List<VehicleSnapshot> vehicles = currentVehicles.get(direction);
+            if (vehicles == null) {
+                continue;
+            }
+            for (VehicleSnapshot vehicle : vehicles) {
+                Color body = vehicleColors[Math.floorMod(vehicle.id(), vehicleColors.length)];
+                double visualLength = Math.max(20.0, 24.0 * scale);
+                double visualWidth = Math.max(11.0, 15.0 * scale);
+                double x;
+                double y;
+                double rotation;
+
+                switch (direction) {
+                    case NORTH -> { // North approach travels down-screen.
+                        double frontY = northStopY - (150.0 - vehicle.position()) * northPpm;
+                        x = cx - halfRoad * 0.5;
+                        y = frontY - visualLength / 2.0;
+                        rotation = 90.0;
+                    }
+                    case SOUTH -> { // South approach travels up-screen.
+                        double frontY = southStopY + (150.0 - vehicle.position()) * southPpm;
+                        x = cx + halfRoad * 0.5;
+                        y = frontY + visualLength / 2.0;
+                        rotation = 270.0;
+                    }
+                    case WEST -> { // West approach travels right-screen.
+                        double frontX = westStopX - (150.0 - vehicle.position()) * westPpm;
+                        x = frontX - visualLength / 2.0;
+                        y = cy + halfRoad * 0.5;
+                        rotation = 0.0;
+                    }
+                    case EAST -> { // East approach travels left-screen.
+                        double frontX = eastStopX + (150.0 - vehicle.position()) * eastPpm;
+                        x = frontX + visualLength / 2.0;
+                        y = cy - halfRoad * 0.5;
+                        rotation = 180.0;
+                    }
+                    default -> throw new IllegalStateException("Unexpected direction: " + direction);
+                }
+
+                drawVehicle(gc, x, y, visualLength, visualWidth, body, rotation, scale);
+            }
+        }
+    }
+
+    private void drawVehicle(GraphicsContext gc, double x, double y,
+                             double length, double width, Color body,
+                             double rotation, double scale) {
+        gc.save();
+        gc.translate(x, y);
+        gc.rotate(rotation);
+
+        double left = -length / 2.0;
+        double top = -width / 2.0;
+
+        // Soft shadow, body, windshield and rear window.
+        gc.setFill(Color.color(0, 0, 0, 0.38));
+        gc.fillRoundRect(left + 1.5 * scale, top + 2 * scale, length, width,
+                6 * scale, 6 * scale);
+        gc.setFill(body);
+        gc.fillRoundRect(left, top, length, width, 6 * scale, 6 * scale);
+        gc.setStroke(Color.web("#101216"));
+        gc.setLineWidth(1.0 * scale);
+        gc.strokeRoundRect(left, top, length, width, 6 * scale, 6 * scale);
+
+        gc.setFill(Color.web("#17212b", 0.88));
+        gc.fillRoundRect(left + length * 0.34, top + width * 0.13,
+                length * 0.34, width * 0.74, 3 * scale, 3 * scale);
+        gc.setFill(Color.web("#dce6f2", 0.75));
+        gc.fillRoundRect(left + length * 0.76, top + width * 0.16,
+                length * 0.10, width * 0.22, 2 * scale, 2 * scale);
+
+        // Headlights make the direction of travel easier to identify.
+        gc.setFill(Color.web("#fff2c2"));
+        gc.fillRoundRect(length * 0.40, top + width * 0.08,
+                length * 0.12, Math.max(2, width * 0.16), 1, 1);
+        gc.fillRoundRect(length * 0.40, top + width * 0.76,
+                length * 0.12, Math.max(2, width * 0.16), 1, 1);
+        gc.restore();
     }
 
     private void drawSidewalks(GraphicsContext gc, double w, double h, double cx, double cy, double hr, double scale) {

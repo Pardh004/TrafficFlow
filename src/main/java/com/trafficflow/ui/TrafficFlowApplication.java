@@ -6,6 +6,7 @@ import com.trafficflow.controller.AdaptiveController;
 import com.trafficflow.engine.SimulationEngine;
 import com.trafficflow.model.SimulationSnapshot;
 import javafx.application.Application;
+import javafx.animation.AnimationTimer;
 import javafx.scene.Scene;
 import javafx.stage.Stage;
 
@@ -35,6 +36,34 @@ public class TrafficFlowApplication extends Application {
         MainView mainView = new MainView();
         mainView.updateSnapshot(initialSnapshot);
 
+        // Start the engine and drive it from JavaFX's frame loop. The engine
+        // retains its own fixed-step accumulator for deterministic updates.
+        engine.start();
+        AnimationTimer animationTimer = new AnimationTimer() {
+            private long previousFrameNanos = -1L;
+
+            @Override
+            public void handle(long now) {
+                if (previousFrameNanos < 0L) {
+                    previousFrameNanos = now;
+                    return;
+                }
+
+                double elapsedSeconds = (now - previousFrameNanos) / 1_000_000_000.0;
+                previousFrameNanos = now;
+
+                // Avoid a large catch-up jump after a stalled or resized window.
+                elapsedSeconds = Math.min(elapsedSeconds, 0.10);
+                engine.update(elapsedSeconds);
+                var snapshot = engine.createSnapshot();
+                mainView.updateSnapshot(snapshot);
+
+                if (snapshot.isCompleted()) {
+                    stop();
+                }
+            }
+        };
+
         // Configure Scene and Stage
         Scene scene = new Scene(mainView, DEFAULT_WIDTH, DEFAULT_HEIGHT);
         primaryStage.setTitle("TrafficFlow – Adaptive Traffic Signal Optimization and Simulation System");
@@ -43,6 +72,7 @@ public class TrafficFlowApplication extends Application {
         primaryStage.setScene(scene);
 
         primaryStage.show();
+        animationTimer.start();
     }
 
     public static void main(String[] args) {
